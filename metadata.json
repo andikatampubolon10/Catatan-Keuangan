@@ -1,0 +1,6 @@
+{
+  "name": "Catatan Keuangan Bulanan Sederhana",
+  "description": "Aplikasi pencatatan keuangan bulanan sederhana untuk mengelola pemasukan, pengeluaran, dan saldo bulanan dengan penyimpanan localStorage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

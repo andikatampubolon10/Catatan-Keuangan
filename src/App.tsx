@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Transaction } from './types';
 import { INITIAL_TRANSACTIONS, MONTH_NAMES } from './constants';
 import { DashboardCards } from './components/DashboardCards';
 import { TransactionForm } from './components/TransactionForm';
 import { TransactionList } from './components/TransactionList';
 import { Header } from './components/Header';
+import { fetchTransactions, createTransaction, deleteTransaction, resetTransactions, checkDatabaseHealth } from './services/api';
 
 const STORAGE_KEY = 'catatan_keuangan_transaksi_v1';
 
@@ -26,11 +27,39 @@ export default function App() {
     return INITIAL_TRANSACTIONS;
   });
 
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isDbConnected, setIsDbConnected] = useState<boolean>(false);
+
   const currentDate = new Date();
   const [selectedMonth, setSelectedMonth] = useState<number>(currentDate.getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState<number>(currentDate.getFullYear());
 
-  // Save to localStorage
+  // Load transactions from MySQL Backend
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const isHealthy = await checkDatabaseHealth();
+      if (isHealthy) {
+        const data = await fetchTransactions();
+        setTransactions(data);
+        setIsDbConnected(true);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      } else {
+        setIsDbConnected(false);
+      }
+    } catch (err) {
+      console.warn('Gagal terhubung ke MySQL, menggunakan penyimpanan lokal:', err);
+      setIsDbConnected(false);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Backup state to localStorage as a safety net
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
@@ -77,17 +106,28 @@ export default function App() {
   }, [selectedMonth, selectedYear]);
 
   // Handlers
-  const handleAddTransaction = (newTxData: Omit<Transaction, 'id' | 'createdAt'>) => {
-    const newTx: Transaction = {
+  const handleAddTransaction = async (newTxData: Omit<Transaction, 'id' | 'createdAt'>) => {
+    const tempId = 'tx-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+    const tempTx: Transaction = {
       ...newTxData,
-      id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
+      id: tempId,
       createdAt: Date.now(),
     };
 
-    setTransactions((prev) => [newTx, ...prev]);
+    // Optimistic UI update
+    setTransactions((prev) => [tempTx, ...prev]);
+
+    // Save to MySQL backend
+    try {
+      const savedTx = await createTransaction(newTxData);
+      setTransactions((prev) => prev.map((tx) => (tx.id === tempId ? savedTx : tx)));
+      setIsDbConnected(true);
+    } catch (err) {
+      console.warn('Gagal simpan ke MySQL, data disimpan di lokal:', err);
+    }
 
     // If transaction date is in another month/year, switch filter to that month/year so user sees it
-    const [txY, txM] = newTx.date.split('-');
+    const [txY, txM] = newTxData.date.split('-');
     const m = parseInt(txM, 10);
     const y = parseInt(txY, 10);
     if (selectedMonth !== 0 && selectedMonth !== m) {
@@ -98,13 +138,25 @@ export default function App() {
     }
   };
 
-  const handleDeleteTransaction = (id: string) => {
+  const handleDeleteTransaction = async (id: string) => {
     setTransactions((prev) => prev.filter((tx) => tx.id !== id));
+
+    try {
+      await deleteTransaction(id);
+    } catch (err) {
+      console.warn('Gagal menghapus dari MySQL:', err);
+    }
   };
 
-  const handleResetData = () => {
+  const handleResetData = async () => {
     if (window.confirm('Apakah Anda yakin ingin mengatur ulang data ke data contoh bawaan?')) {
-      setTransactions(INITIAL_TRANSACTIONS);
+      try {
+        await resetTransactions();
+        await loadData();
+      } catch (err) {
+        console.warn('Gagal reset ke MySQL, mereset secara lokal:', err);
+        setTransactions(INITIAL_TRANSACTIONS);
+      }
       const now = new Date();
       setSelectedMonth(now.getMonth() + 1);
       setSelectedYear(now.getFullYear());
@@ -123,7 +175,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#0A0A0A] text-[#F5F5F5]">
-      <Header onResetData={handleResetData} onExportData={handleExportData} />
+      <Header onResetData={handleResetData} onExportData={handleExportData} isDbConnected={isDbConnected} />
 
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         {/* Dashboard Top Cards */}
@@ -158,8 +210,13 @@ export default function App() {
       </main>
 
       <footer className="px-4 sm:px-8 py-5 bg-[#171717] border-t border-[#262626] text-[10px] text-[#737373] uppercase tracking-[0.2em] flex flex-col sm:flex-row justify-between items-center gap-2 mt-auto">
-        <p>Catatan Keuangan Bulanan &bull; Local Storage Ledger</p>
-        <p className="font-mono text-[#525252]">Sistem Terhubung</p>
+        <p>Catatan Keuangan Bulanan &bull; {isDbConnected ? 'MySQL Database Sinkron' : 'Local Storage Ledger'}</p>
+        <div className="flex items-center gap-2 font-mono">
+          <span className={`w-1.5 h-1.5 rounded-full ${isDbConnected ? 'bg-emerald-500' : 'bg-neutral-500'}`} />
+          <span className={isDbConnected ? 'text-emerald-500' : 'text-[#525252]'}>
+            {isDbConnected ? 'Database MySQL Aktif' : 'Penyimpanan Offline'}
+          </span>
+        </div>
       </footer>
     </div>
   );
